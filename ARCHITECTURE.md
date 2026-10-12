@@ -5,16 +5,32 @@ Decisões, trade-offs e limitações do processador de apostas. As referências 
 ## 1. Visão geral
 
 ```mermaid
-flowchart LR
-  P[Provedor] -- HTTP --> GW[nginx] --> A1 & A2 & A3
-  P -- SQS --> Q[[wager-transactions.fifo]]
-  subgraph inst[N instâncias iguais]
-    A1[app] ; A2[app] ; A3[app]
+flowchart TB
+  subgraph IN["Adapters de entrada"]
+    HTTP["HTTP controllers + DTOs<br/>(atrás do gateway nginx, N réplicas)"]
+    SQSC["SQS consumer<br/>wager-transactions.fifo"]
+    WK["Workers<br/>outbox · pending-reference"]
   end
-  Q --> A1 & A2 & A3
-  A1 & A2 & A3 -- "1 transação SQL:<br/>inbox + saldo + ledger + outbox" --> PG[(PostgreSQL)]
-  A1 & A2 & A3 -. "worker outbox<br/>(depois do commit)" .-> E[[wallet-events.fifo]]
-  Q -. tentativas esgotadas / permanente .-> DLQ[[wager-transactions-dlq.fifo]]
+  subgraph APP["Application"]
+    UC["Use cases<br/>ProcessWagerTransaction · CreateWallet<br/>Reconcile · Queries"]
+    PORTS["Portas (interfaces)<br/>Repositories · Publisher · Clock · IdGenerator"]
+  end
+  subgraph DOM["Domain — TS puro"]
+    D["Money · Wallet · WagerTransaction<br/>WalletLedgerEntry · Inbox/Outbox<br/>IntegrationEvent · FailureCode"]
+  end
+  subgraph OUT["Adapters de saída"]
+    ORM["MikroORM<br/>EntitySchema + mappers"]
+    PUB["AWS SDK v3<br/>SQS publisher"]
+  end
+  HTTP --> UC
+  SQSC --> UC
+  WK --> UC
+  UC --> D
+  UC --> PORTS
+  ORM -. implementa .-> PORTS
+  PUB -. implementa .-> PORTS
+  ORM --> PG[("PostgreSQL")]
+  PUB --> Q[["wallet-events.fifo"]]
 ```
 
 Arquitetura hexagonal em três contextos: **wallet** (saldo e ledger), **wagering** (regras de aposta, idempotência, referências) e **messaging** (inbox/outbox). O domínio é TypeScript puro — não importa NestJS nem MikroORM (§6.1) — e é testado sem banco. HTTP e SQS entram pelo **mesmo caso de uso** (`ProcessWagerTransactionUseCase`, §10), que conhece apenas portas (`UnitOfWork`, repositórios, `Clock`, `IdGenerator`).

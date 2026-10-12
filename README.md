@@ -18,33 +18,51 @@ Serviço financeiro distribuído que processa transações de apostas (`BET`, `W
 5. [Ferramentas de visualização](#ferramentas-de-visualização-opcionais)
 6. [Ambiente de demonstração](#ambiente-de-demonstração-opcional)
 7. [Arquitetura em resumo](#arquitetura-em-resumo)
-8. [Garantias e onde estão](#garantias-e-onde-estão)
-9. [API](#api)
-10. [Entrada por SQS](#entrada-por-sqs)
-11. [Verificar o invariante](#verificar-o-invariante-walletbalance--ledger)
-12. [Testes](#testes)
-13. [Observabilidade](#observabilidade)
-14. [Configuração](#configuração)
-15. [Comandos úteis](#comandos-úteis)
-16. [Estrutura do repositório](#estrutura-do-repositório)
-17. [Limitações conhecidas](#limitações-conhecidas)
-
+8. [Diagramas](#diagramas)
+9. [Garantias e onde estão](#garantias-e-onde-estão)
+10. [API](#api)
+11. [Entrada por SQS](#entrada-por-sqs)
+12. [Verificar o invariante](#verificar-o-invariante-walletbalance--ledger)
+13. [Testes](#testes)
+14. [Observabilidade](#observabilidade)
+15. [Configuração](#configuração)
+16. [Comandos úteis](#comandos-úteis)
+17. [Estrutura do repositório](#estrutura-do-repositório)
+18. [Limitações conhecidas](#limitações-conhecidas)
 ---
 
 ## Visão geral
 
 ```mermaid
-flowchart LR
-  P[Provedor] -- HTTP --> GW[nginx] --> A1 & A2 & A3
-  P -- SQS --> Q[[wager-transactions.fifo]]
-  subgraph inst[N instâncias iguais]
-    A1[app] ; A2[app] ; A3[app]
+flowchart TB
+  subgraph IN["Adapters de entrada"]
+    HTTP["HTTP controllers + DTOs<br/>(atrás do gateway nginx, N réplicas)"]
+    SQSC["SQS consumer<br/>wager-transactions.fifo"]
+    WK["Workers<br/>outbox · pending-reference"]
   end
-  Q --> A1 & A2 & A3
-  A1 & A2 & A3 -- "1 transação SQL:<br/>inbox + saldo + ledger + outbox" --> PG[(PostgreSQL)]
-  A1 & A2 & A3 -. "worker outbox<br/>(depois do commit)" .-> E[[wallet-events.fifo]]
-  Q -. tentativas esgotadas / permanente .-> DLQ[[wager-transactions-dlq.fifo]]
+  subgraph APP["Application"]
+    UC["Use cases<br/>ProcessWagerTransaction · CreateWallet<br/>Reconcile · Queries"]
+    PORTS["Portas (interfaces)<br/>Repositories · Publisher · Clock · IdGenerator"]
+  end
+  subgraph DOM["Domain — TS puro"]
+    D["Money · Wallet · WagerTransaction<br/>WalletLedgerEntry · Inbox/Outbox<br/>IntegrationEvent · FailureCode"]
+  end
+  subgraph OUT["Adapters de saída"]
+    ORM["MikroORM<br/>EntitySchema + mappers"]
+    PUB["AWS SDK v3<br/>SQS publisher"]
+  end
+  HTTP --> UC
+  SQSC --> UC
+  WK --> UC
+  UC --> D
+  UC --> PORTS
+  ORM -. implementa .-> PORTS
+  PUB -. implementa .-> PORTS
+  ORM --> PG[("PostgreSQL")]
+  PUB --> Q[["wallet-events.fifo"]]
 ```
+
+O domínio fica no centro, em TypeScript puro; ORM e SQS são detalhes plugáveis por trás das portas. HTTP, fila e workers entram pelos mesmos casos de uso.
 
 - **Instâncias idênticas e sem estado.** HTTP, consumer SQS, publisher da outbox e worker de referências pendentes rodam em todas. Elas se coordenam só pelo PostgreSQL: não há eleição de líder nem lock global.
 - **Uma transação SQL por operação.** Inbox, transação, saldo, ledger e outbox são gravados juntos (§6.5). O evento só é **publicado** depois do commit, por um worker separado (§5.4).
@@ -183,6 +201,262 @@ HTTP e SQS entram pelo **mesmo caso de uso** (`ProcessWagerTransactionUseCase`, 
    - SIGTERM: conclui a mensagem em andamento e devolve as demais.
 
    Dentro do lote, uma mensagem reagendada segura as seguintes do mesmo grupo FIFO.
+
+## Diagramas
+
+Os mesmos diagramas da [página de estrutura](docs/architecture-overview.html), que traz também a árvore de pastas e as tabelas de regras e de garantias do schema.
+
+### Fluxo transacional
+
+Inbox, transação, saldo, ledger e outbox numa única transação SQL (§6.5). O evento é gravado antes do commit e **publicado** depois, por um worker separado (§5.4); o ack da fila também só acontece depois do commit (§10).
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant P as Provedor (HTTP ou SQS)
+  participant UC as ProcessWagerTransaction
+  participant DB as PostgreSQL
+  participant W as Outbox worker
+  participant Q as wallet-events.fifo
+  P->>UC: comando + Idempotency-Key
+  UC->>DB: BEGIN
+  UC->>DB: INSERT inbox ON CONFLICT DO NOTHING (só SQS)
+  UC->>DB: SELECT wallet FOR UPDATE
+  UC->>DB: busca por idempotency_key
+  alt chave já existe
+    UC-->>P: mesmo hash: replay da resposta original<br/>hash diferente: 409 conflito
+  else chave nova
+    UC->>UC: domínio aplica a regra (debit/credit/reject)
+    UC->>DB: INSERT transação · UPDATE wallet · INSERT ledger
+    UC->>DB: INSERT outbox (eventos)
+    UC->>DB: COMMIT
+    UC-->>P: 201 / 202 / 422 · ack SQS após o commit
+  end
+  W->>DB: SELECT outbox pendente FOR UPDATE SKIP LOCKED
+  W->>Q: SendMessage (dedup = eventId)
+  W->>DB: published_at = now()
+```
+
+### Concorrência por wallet
+
+O cenário obrigatório do §8: saldo 100.00 e duas apostas de 80.00 ao mesmo tempo, em instâncias diferentes. O lock da wallet serializa as duas: uma é processada, a outra é rejeitada por saldo insuficiente, e o ledger tem exatamente um débito.
+
+```mermaid
+sequenceDiagram
+  participant A as Instância A · BET 80.00
+  participant DB as wallets (saldo 100.00)
+  participant B as Instância B · BET 80.00
+  A->>DB: SELECT ... FOR UPDATE
+  Note over DB: lock da wallet com A
+  B->>DB: SELECT ... FOR UPDATE
+  Note over B: espera (lock_timeout)
+  A->>DB: saldo 20.00 · 1 DEBIT · COMMIT
+  DB-->>B: lock liberado, lê saldo 20.00
+  B->>DB: domínio rejeita: INSUFFICIENT_FUNDS
+  B->>DB: transação REJECTED, sem ledger · COMMIT
+```
+
+### Inbox, outbox e SQS
+
+Destino de cada mensagem da fila de entrada (ack, retry com backoff ou DLQ) e publicação dos eventos pela outbox, com vários publishers em paralelo.
+
+```mermaid
+flowchart LR
+  subgraph FILA["Entrada"]
+    WT[["wager-transactions.fifo<br/>MessageGroupId = walletId"]]
+    DLQ[["wager-transactions-dlq.fifo"]]
+  end
+  C["Consumer<br/>long polling"] -->|receive| WT
+  C --> UC["mesmo use case do HTTP"]
+  UC -->|negócio: processada, rejeitada, pendente, replay| ACK["DeleteMessage<br/>após commit"]
+  UC -->|transitório: DB/SQS fora| VIS["ChangeMessageVisibility<br/>backoff"]
+  UC -->|permanente: malformada, conflito| DLQ
+  VIS -.->|maxReceiveCount = 5| DLQ
+  UC --> OB[("outbox")]
+  OB --> W["Outbox worker<br/>N instâncias, SKIP LOCKED"]
+  W --> EV[["wallet-events.fifo"]]
+```
+
+### Estados da transação
+
+`PROCESSED`, `REJECTED` e `FAILED` são terminais: o domínio recusa a transição, e um trigger no banco também bloqueia (§6.3). Referência ausente leva a `PENDING_REFERENCE`, reprocessada pelo worker com backoff (§7.1).
+
+```mermaid
+stateDiagram-v2
+  [*] --> PENDING : create()
+  PENDING --> PROCESSED : regra aplicada
+  PENDING --> REJECTED : regra de negócio
+  PENDING --> PENDING_REFERENCE : referência ausente
+  PENDING_REFERENCE --> PENDING_REFERENCE : worker reagenda (backoff)
+  PENDING_REFERENCE --> PROCESSED : referência chegou
+  PENDING_REFERENCE --> REJECTED : regra violada ou tentativas esgotadas
+  PENDING_REFERENCE --> FAILED : erro permanente no worker
+  PROCESSED --> [*]
+  REJECTED --> [*]
+  FAILED --> [*]
+```
+
+### Modelo de dados
+
+As garantias de unicidade, imutabilidade e não-negatividade ficam no schema (§5.9): `CHECK`, `UNIQUE`, índice único parcial para a reversão única e triggers.
+
+```mermaid
+erDiagram
+  WALLETS ||--o{ WAGER_TRANSACTIONS : "recebe"
+  WALLETS ||--o{ WALLET_LEDGER_ENTRIES : "registra"
+  WAGER_TRANSACTIONS ||--o| WALLET_LEDGER_ENTRIES : "gera no máximo 1"
+  WAGER_TRANSACTIONS |o--o{ WAGER_TRANSACTIONS : "referencia"
+  WALLETS {
+    uuid id PK
+    uuid player_id "UNIQUE com currency"
+    char3 currency
+    bigint balance_minor "CHECK >= 0"
+    int version "CHECK >= 1"
+  }
+  WAGER_TRANSACTIONS {
+    uuid id PK
+    uuid wallet_id FK
+    text provider_id "UNIQUE com external_tx_id"
+    text external_tx_id
+    text idempotency_key "UNIQUE"
+    char64 payload_hash
+    text kind
+    text status
+    bigint amount_minor
+    uuid reference_tx_id FK "UNIQUE parcial em reversões"
+    text failure_code
+    bigint balance_after_snapshot_minor
+  }
+  WALLET_LEDGER_ENTRIES {
+    uuid id PK
+    uuid wallet_id FK
+    uuid transaction_id FK "UNIQUE com wallet_id"
+    text direction
+    bigint amount_minor "CHECK > 0"
+    bigint balance_before_minor
+    bigint balance_after_minor "CHECK = before ± amount"
+  }
+  INBOX_MESSAGES {
+    text consumer_name PK
+    text message_id PK
+    char64 payload_hash
+    timestamptz processed_at
+  }
+  OUTBOX_MESSAGES {
+    uuid id PK
+    uuid aggregate_id
+    text event_type
+    jsonb payload
+    int attempts
+    timestamptz next_attempt_at
+    timestamptz published_at
+  }
+```
+
+### Modelo de domínio
+
+Entidades com construtor privado e factories (`create`/`open`/`from` validam, `rehydrate` só reconstrói, §6.0). A `Wallet` é a única que altera saldo, e toda movimentação devolve o lançamento do ledger.
+
+```mermaid
+classDiagram
+  direction LR
+  class Money {
+    <<Value Object>>
+    -bigint minorUnits
+    +string currency
+    +from(props) Money
+    +zero(currency) Money
+    +add(other) Money
+    +subtract(other) Money
+    +negate() Money
+    +isLessThan(other) bool
+    +toJSON() MoneyProps
+  }
+  class Wallet {
+    <<Aggregate Root>>
+    +string id
+    +string playerId
+    +string currency
+    -Money balance
+    -number version
+    +open(props) Wallet
+    +rehydrate(state) Wallet
+    +move(direction, movement) WalletLedgerEntry
+    +debit(movement) WalletLedgerEntry
+    +credit(movement) WalletLedgerEntry
+  }
+  class WagerTransaction {
+    <<Entity>>
+    +string providerId
+    +string externalTransactionId
+    +string idempotencyKey
+    +string payloadHash
+    +Kind kind
+    +Money money
+    -Status status
+    -FailureCode failureCode
+    -Money balanceAfterSnapshot
+    +create(props) WagerTransaction
+    +markProcessed(refId, at)
+    +markPendingReference()
+    +reject(code)
+    +fail(code)
+    +ledgerDirectionFor(ref) LedgerDirection
+  }
+  class WalletLedgerEntry {
+    <<Entity imutável>>
+    +string walletId
+    +string transactionId
+    +LedgerDirection direction
+    +Money money
+    +Money balanceBefore
+    +Money balanceAfter
+    +create(props) WalletLedgerEntry
+    +isBalanced() bool
+  }
+  class OutboxMessage {
+    +number attempts
+    +Date nextAttemptAt
+    +Date publishedAt
+    +enqueue(event) OutboxMessage
+    +markPublished(at)
+    +scheduleRetry(now)
+  }
+  class InboxMessage {
+    +string consumerName
+    +string messageId
+    +markProcessed(at)
+  }
+  class IntegrationEvent {
+    <<abstract>>
+    +string eventType
+    +number version
+    +string correlationId
+    +toJSON()
+  }
+  Wallet *-- Money
+  WagerTransaction *-- Money
+  Wallet ..> WalletLedgerEntry : cria
+  WagerTransaction "1" --> "0..1" WalletLedgerEntry
+  WagerTransaction --> WagerTransaction : referência
+  OutboxMessage ..> IntegrationEvent : serializa
+  IntegrationEvent <|-- WagerTransactionProcessed
+  IntegrationEvent <|-- WagerTransactionRejected
+  IntegrationEvent <|-- WalletBalanceChanged
+  IntegrationEvent <|-- WagerTransactionPendingReference
+```
+
+### Money em bigint
+
+Dinheiro nunca passa por `number` (§5.1): `bigint` em centavos no domínio e no banco; a string com 2 casas existe só nas bordas (HTTP, SQS, eventos).
+
+```mermaid
+flowchart LR
+  A["#quot;25.00#quot; BRL<br/>HTTP · SQS"] -->|"Money.from<br/>regex + inteiro x 100 + centavos"| B["2500n<br/>domínio"]
+  B -->|"MikroORM bigint<br/>runtimeType bigint"| C[("amount_minor<br/>bigint")]
+  C -->|"rehydrate"| B
+  B -->|"Money.toJSON"| D["#quot;25.00#quot;<br/>resposta · evento"]
+```
 
 ## Garantias e onde estão
 
