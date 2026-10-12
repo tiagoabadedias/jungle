@@ -1,0 +1,113 @@
+{
+  "environment": {
+    "label": "3-replicas",
+    "date": "2026-10-11T12:07:28.441Z",
+    "host": {
+      "cpu": "Apple M1",
+      "cores": 8,
+      "memoryGb": 8,
+      "platform": "darwin 23.5.0"
+    },
+    "appReplicas": 3,
+    "bun": "1.4.2",
+    "target": "http://localhost:43180",
+    "durationSeconds": 20,
+    "virtualUsers": 32
+  },
+  "results": [
+    {
+      "scenario": "distributed",
+      "durationSeconds": 20,
+      "virtualUsers": 32,
+      "requests": 5557,
+      "throughputRps": 277.9,
+      "latencyMs": {
+        "p50": 94.9,
+        "p95": 282.7,
+        "p99": 420.5,
+        "max": 705.1
+      },
+      "statusCodes": {
+        "201": 5557
+      },
+      "errorRate": 0,
+      "rejectedByBusinessRule": 0,
+      "lockWaitersObserved": {
+        "max": 4,
+        "avg": 0.8
+      },
+      "outbox": {
+        "maxPending": 10404,
+        "maxLagSeconds": 19.76
+      },
+      "wallets": 200,
+      "replaysSent": 277,
+      "outboxDrainSecondsAfterRun": 74.25,
+      "cpuAtMidRun": {
+        "app-5": "67.05%",
+        "app-4": "63.44%",
+        "gateway-1": "10.43%",
+        "app-3": "52.89%",
+        "ministack-1": "78.65%",
+        "postgres-1": "74.44%"
+      }
+    },
+    {
+      "scenario": "hot-wallet",
+      "durationSeconds": 20,
+      "virtualUsers": 32,
+      "requests": 2846,
+      "throughputRps": 142.3,
+      "latencyMs": {
+        "p50": 207,
+        "p95": 467.9,
+        "p99": 617.7,
+        "max": 877.7
+      },
+      "statusCodes": {
+        "201": 2846
+      },
+      "errorRate": 0,
+      "rejectedByBusinessRule": 0,
+      "lockWaitersObserved": {
+        "max": 27,
+        "avg": 22
+      },
+      "outbox": {
+        "maxPending": 3636,
+        "maxLagSeconds": 13.4
+      },
+      "wallets": 1,
+      "replaysSent": 128,
+      "outboxDrainSecondsAfterRun": 27.38,
+      "cpuAtMidRun": {
+        "app-5": "39.35%",
+        "app-4": "34.37%",
+        "gateway-1": "4.74%",
+        "app-3": "40.61%",
+        "ministack-1": "143.53%",
+        "postgres-1": "45.36%"
+      }
+    },
+    {
+      "scenario": "sqs-ingestion",
+      "messages": 2000,
+      "wallets": 50,
+      "enqueueSeconds": 9.08,
+      "endToEndSeconds": 35.16,
+      "throughputMessagesPerSecond": 56.9,
+      "lockWaitersObserved": {
+        "max": 0
+      },
+      "outbox": {
+        "maxPending": 30,
+        "maxLagSeconds": 0.43
+      },
+      "caveat": "MiniStack não aplica quotas nem throttling do SQS real: o número reflete o processamento da aplicação, não a fila."
+    }
+  ],
+  "correctness": {
+    "walletsChecked": 256,
+    "invariantViolations": 0
+  }
+}

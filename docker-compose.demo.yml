@@ -1,0 +1,113 @@
+# Ambiente TEMPORÁRIO de demonstração (local com --local ou num servidor com Docker). Separado do
+# docker-compose.yml de desenvolvimento; os dois reaproveitam docker-compose.common.yml (imagens,
+# healthchecks, build) e infra/nginx/app-proxy.conf (rotas da API e do Swagger). A aplicação é
+# exatamente a entregue: mesmo Dockerfile, sem autenticação (decisão documentada, §2), health aberto.
+#
+#   docker compose -f docker-compose.demo.yml --env-file infra/demo/.env.demo up -d --build --wait
+#
+# Diferenças em relação ao ambiente local (só infraestrutura):
+#   - PostgreSQL e MiniStack SEM porta pública; só o gateway expõe 80 / 8081 / 8082.
+#   - Senhas do banco geradas no deploy (infra/demo/.env.demo, fora do repositório).
+#   - Ferramentas de inspeção somente leitura (pgweb com role só de SELECT; página de filas que não consome mensagens).
+#   - 3 réplicas da app, restart automático, rotação de logs, NODE_ENV=production, estado do MiniStack persistido.
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
+services:
+  postgres:
+    extends: { file: docker-compose.common.yml, service: postgres }
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      POSTGRES_USER: wagering
+      POSTGRES_PASSWORD: ${DEMO_DB_OWNER_PASSWORD:?gere com scripts/deploy-demo.sh}
+      POSTGRES_DB: wagering
+      DEMO_APP_DB_PASSWORD: ${DEMO_APP_DB_PASSWORD:?}
+      DEMO_READONLY_DB_PASSWORD: ${DEMO_READONLY_DB_PASSWORD:?}
+    volumes:
+      - pgdata:/var/lib/postgresql
+      - ./infra/demo/initdb:/docker-entrypoint-initdb.d:ro
+
+  ministack:
+    extends: { file: docker-compose.common.yml, service: ministack }
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      MINISTACK_REGION: us-east-1
+      LOG_LEVEL: WARNING
+      PERSIST_STATE: "1"                 # filas e mensagens sobrevivem a um restart do container
+      STATE_DIR: /var/lib/ministack
+    volumes:
+      - ministack-state:/var/lib/ministack
+    healthcheck:                         # mais folga que no local: o estado persistido é recarregado no boot
+      timeout: 5s
+      retries: 30
+
+  migrate:
+    extends: { file: docker-compose.common.yml, service: migrate }
+    logging: *logging
+    environment:
+      DATABASE_MIGRATION_URL: postgres://wagering:${DEMO_DB_OWNER_PASSWORD}@postgres:5432/wagering
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  app:
+    extends: { file: docker-compose.common.yml, service: app }
+    restart: unless-stopped
+    logging: *logging
+    deploy:
+      replicas: 3                        # várias instâncias, como nos testes de concorrência (§8, §13)
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: info
+      DATABASE_URL: postgres://wagering_app:${DEMO_APP_DB_PASSWORD}@postgres:5432/wagering
+      DATABASE_POOL_MAX: 8
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      ministack: { condition: service_healthy }
+
+  pgweb:                                 # navegador do banco: SOMENTE LEITURA, conexão travada
+    image: sosedoff/pgweb:0.16.2
+    restart: unless-stopped
+    logging: *logging
+    command: ["--readonly", "--lock-session"]
+    environment:
+      PGWEB_DATABASE_URL: postgres://wagering_readonly:${DEMO_READONLY_DB_PASSWORD}@postgres:5432/wagering?sslmode=disable
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  gateway:
+    image: nginx:1.29-alpine
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      DEMO_EXPIRES: ${DEMO_EXPIRES:?}
+    ports:
+      - "${DEMO_HTTP_PORT:-80}:80"       # página da demo, API, Swagger, health, métricas
+      - "${DEMO_DB_PORT:-8081}:8081"     # pgweb (somente leitura)
+      - "${DEMO_QUEUES_PORT:-8082}:8082" # filas (somente leitura)
+    volumes:
+      - ./infra/demo/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infra/demo/gateway.conf.template:/etc/nginx/templates/gateway.conf.template:ro
+      - ./infra/nginx/app-proxy.conf:/etc/nginx/snippets/app-proxy.conf:ro
+      - ./docs/architecture-overview.html:/usr/share/nginx/docs/architecture-overview.html:ro
+      - ./infra/demo/site:/usr/share/nginx/demo:ro
+      - ./docs/openapi.yaml:/usr/share/nginx/spec/openapi.yaml:ro
+    depends_on:
+      app: { condition: service_healthy }
+      pgweb: { condition: service_started }
+      swagger-ui: { condition: service_started }
+
+  swagger-ui:
+    image: swaggerapi/swagger-ui:v5.17.14
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      BASE_URL: /docs
+      SWAGGER_JSON_URL: /openapi.yaml
+
+volumes:
+  pgdata:
+  ministack-state:

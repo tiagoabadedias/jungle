@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wagering Processor · Demo</title>
+<style>
+:root {
+  --bg: #f6f7f4; --surface: #ffffff; --ink: #18201b; --muted: #5b665f; --line: #d9ded8;
+  --accent: #1f6b47; --accent-soft: #e3efe8; --warn: #8a5a0a; --warn-soft: #fbf0de; --code: #eef1ec;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #111613; --surface: #18201b; --ink: #e4ebe6; --muted: #9aa69f; --line: #2c3730;
+    --accent: #6fcf9d; --accent-soft: #1d3127; --warn: #e7b464; --warn-soft: #3a2c15; --code: #1d2620; color-scheme: dark; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.6 var(--sans); padding-inline: 16px; }
+main { max-width: 960px; margin: 0 auto; padding-block: 40px 64px; display: flex; flex-direction: column; gap: 36px; }
+h1 { font-size: 1.9rem; line-height: 1.15; margin: 0; }
+h2 { font-size: 1.2rem; margin: 0; }
+p { margin: 0; max-width: 72ch; }
+.muted { color: var(--muted); }
+header { display: flex; flex-direction: column; gap: 12px; }
+.badge { display: inline-block; font: 600 .78rem var(--mono); background: var(--warn-soft); color: var(--warn); padding: 3px 10px; border-radius: 999px; align-self: flex-start; }
+.notice { background: var(--warn-soft); border-left: 3px solid var(--warn); border-radius: 0 8px 8px 0; padding: 14px 18px; display: flex; flex-direction: column; gap: 8px; }
+section { display: flex; flex-direction: column; gap: 14px; }
+.links { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+.links a { display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; color: var(--ink); text-decoration: none; }
+.links a:hover, .links a:focus-visible { border-color: var(--accent); outline: none; }
+.links strong { color: var(--accent); }
+.links span { font-size: .85rem; color: var(--muted); }
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: .88rem; }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { background: var(--code); color: var(--muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; }
+tr:last-child td { border-bottom: none; }
+code, pre { font-family: var(--mono); font-size: .84rem; background: var(--code); border-radius: 6px; }
+code { padding: 1px 5px; }
+pre { padding: 14px 16px; margin: 0; overflow-x: auto; white-space: pre; }
+.copy { align-self: flex-start; font: 500 .8rem var(--sans); border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; }
+ul { margin: 0; padding-left: 1.2em; }
+footer { color: var(--muted); font-size: .85rem; border-top: 1px solid var(--line); padding-top: 16px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <span class="badge" id="expiry">ambiente temporário</span>
+    <h1>Distributed Wagering Processor — ambiente de demonstração</h1>
+    <p class="muted">Serviço financeiro que processa apostas (BET, WIN, LOSS, REFUND, ROLLBACK) por HTTP e SQS, com idempotência persistente, ledger imutável, inbox/outbox e várias instâncias. Este servidor existe só para a avaliação.</p>
+  </header>
+
+  <div class="notice">
+    <p><strong>Ambiente temporário, aberto publicamente e com dados sintéticos.</strong> Será destruído na data indicada acima.</p>
+    <p>A aplicação <strong>não implementa autenticação</strong>, conforme decisão documentada no <code>ARCHITECTURE.md</code> (§2 do desafio: autenticação não pontua; ponto de extensão <code>ProviderAuthGuard</code> / <code>ProviderIdentityPort</code> no código). Os endpoints de health são abertos. Nada foi acrescentado na frente da API: é a mesma aplicação da entrega.</p>
+    <p>As ferramentas de inspeção (banco e filas) são <strong>somente leitura</strong>: permitem ver tudo, mas não alterar nada.</p>
+  </div>
+
+  <section>
+    <h2>Onde olhar</h2>
+    <div class="links" id="links"></div>
+  </section>
+
+  <section>
+    <h2>Wallets de demonstração</h2>
+    <p class="muted">Geradas no deploy por <code>bun run demo</code> (HTTP e SQS, como um provedor faria). Crie as suas pelo Swagger.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Wallet</th><th>Id</th><th>O que aconteceu</th><th>Consultar</th></tr></thead>
+        <tbody id="wallets"><tr><td colspan="4" class="muted">carregando…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Verifique o invariante <code>wallet.balance == ledger</code></h2>
+    <div class="grid2">
+      <div class="card">
+        <strong>Por wallet, pela API</strong>
+        <pre id="curl-reconcile"></pre>
+        <button class="copy" data-copy="curl-reconcile" type="button">Copiar</button>
+      </div>
+      <div class="card">
+        <strong>Todas as wallets, no banco (aba Query do pgweb)</strong>
+        <pre id="sql-invariant">select w.id, w.balance_minor,
+       coalesce(sum(case when e.direction = 'CREDIT'
+                         then e.amount_minor else -e.amount_minor end), 0) as ledger
+  from wallets w
+  left join wallet_ledger_entries e on e.wallet_id = w.id
+ group by w.id
+having w.balance_minor <> coalesce(sum(case when e.direction = 'CREDIT'
+                         then e.amount_minor else -e.amount_minor end), 0);
+-- nenhuma linha = consistente</pre>
+        <button class="copy" data-copy="sql-invariant" type="button">Copiar</button>
+      </div>
+    </div>
+    <p class="muted">Valores no banco ficam em unidades menores: <code>2500</code> = <code>25.00</code>.</p>
+  </section>
+
+  <section>
+    <h2>Teste rápido pela linha de comando</h2>
+    <pre id="curl-demo"></pre>
+    <button class="copy" data-copy="curl-demo" type="button">Copiar</button>
+    <p class="muted">Repita o mesmo comando: mesma resposta, mesmo status e <code>"idempotentReplay": true</code>. Mude o valor mantendo a mesma <code>Idempotency-Key</code>: <code>409</code>.</p>
+  </section>
+
+  <section>
+    <h2>O que é real aqui</h2>
+    <div class="grid2">
+      <div class="card">
+        <strong>Real</strong>
+        <ul>
+          <li>PostgreSQL 18 com todas as constraints e triggers do schema</li>
+          <li>3 réplicas da aplicação atrás do gateway</li>
+          <li>Consumer SQS, outbox publisher e worker de referências em cada réplica</li>
+          <li>Logs, métricas e health checks da entrega</li>
+        </ul>
+      </div>
+      <div class="card">
+        <strong>Limitações deste ambiente</strong>
+        <ul>
+          <li>HTTP sem TLS (sem domínio, acesso pelo IP)</li>
+          <li>SQS emulado pelo MiniStack (aceito pelo §4), com estado persistido em disco</li>
+          <li>Dados sintéticos; qualquer pessoa com o endereço pode criar transações</li>
+          <li>Droplet pequeno (2 vCPU): latências maiores que em produção</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    Código, decisões e testes: <code>README.md</code>, <code>ARCHITECTURE.md</code>, <code>docs/LOAD_TEST.md</code>. Todas as respostas deste servidor trazem o header <code>X-Demo-Environment</code>.
+  </footer>
+</main>
+<script>
+  const host = location.hostname;
+  const http = `${location.protocol}//${location.host}`;
+  const port = (p) => `${location.protocol}//${host}:${p}`;
+  const links = [
+    ['API (Swagger UI)', `${http}/docs`, 'Todos os endpoints, com "Try it out"'],
+    ['Arquitetura', `${http}/arquitetura`, 'Camadas, domínio, dados, fluxos e falhas, em diagramas'],
+    ['Banco (pgweb)', port(8081), 'Todas as tabelas e consultas SELECT, somente leitura'],
+    ['Filas (SQS)', port(8082), 'Entrada, DLQ e eventos publicados, sem consumir'],
+    ['Readiness', `${http}/health/ready`, 'PostgreSQL e SQS alcançáveis'],
+    ['Métricas', `${http}/metrics`, 'Formato Prometheus'],
+  ];
+  document.getElementById('links').innerHTML = links
+    .map(([title, href, hint]) => `<a href="${href}"><strong>${title}</strong><span>${hint}</span><span><code>${href.replace(/^https?:\/\//, '')}</code></span></a>`)
+    .join('');
+
+  const escape = (value) => String(value).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  const playerExample = '<PLAYER_ID>';
+  const walletExample = '<WALLET_ID>';
+  function renderCommands(wallet) {
+    const player = wallet?.playerId ?? playerExample;
+    const id = wallet?.walletId ?? walletExample;
+    document.getElementById('curl-reconcile').textContent = `curl -s -X POST ${http}/wallets/${id}/reconciliation`;
+    document.getElementById('curl-demo').textContent =
+`curl -s -X POST ${http}/wagering/transactions \\
+  -H 'content-type: application/json' \\
+  -H 'Idempotency-Key: provider-a:minha-aposta-1' \\
+  -d '{"providerId":"provider-a","externalTransactionId":"minha-aposta-1",
+       "playerId":"${player}","walletId":"${id}",
+       "roundId":"round-1","gameId":"fortune-chimp","kind":"BET",
+       "money":{"amount":"5.00","currency":"BRL"}}'`;
+  }
+  renderCommands(undefined);
+
+  fetch('/demo.json', { cache: 'no-store' })
+    .then((response) => (response.ok ? response.json() : Promise.reject(response.status)))
+    .then((demo) => {
+      if (demo.expires) document.getElementById('expiry').textContent = `ambiente temporário · disponível até ${demo.expires.split('-').reverse().join('/')}`;
+      document.getElementById('wallets').innerHTML = demo.wallets
+        .map((w) => `<tr><td><strong>${escape(w.name)}</strong></td><td><code>${escape(w.walletId)}</code></td><td>${escape(w.story)}</td>
+          <td><a href="/wallets/${escape(w.walletId)}">saldo</a> · <a href="/wallets/${escape(w.walletId)}/ledger">ledger</a></td></tr>`)
+        .join('');
+      renderCommands(demo.wallets[0]);
+    })
+    .catch(() => {
+      document.getElementById('wallets').innerHTML = '<tr><td colspan="4" class="muted">Dados de demonstração ainda não gerados.</td></tr>';
+    });
+
+  document.querySelectorAll('[data-copy]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const text = document.getElementById(button.dataset.copy).textContent;
+      try { await navigator.clipboard.writeText(text); button.textContent = 'Copiado'; }
+      catch { window.getSelection().selectAllChildren(document.getElementById(button.dataset.copy)); button.textContent = 'Selecionado'; }
+      setTimeout(() => (button.textContent = 'Copiar'), 1500);
+    });
+  });
+</script>
+</body>
+</html>

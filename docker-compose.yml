@@ -1,0 +1,82 @@
+services:
+  postgres:
+    extends: { file: docker-compose.common.yml, service: postgres }
+    environment:
+      POSTGRES_USER: wagering
+      POSTGRES_PASSWORD: wagering   # credencial local de desenvolvimento
+      POSTGRES_DB: wagering
+    ports: ["${POSTGRES_PORT:-55432}:5432"]   # 5432 costuma estar ocupada por um Postgres local
+    volumes:
+      - pgdata:/var/lib/postgresql   # PG18: volume na raiz, não em /data
+      - ./infra/postgres/initdb:/docker-entrypoint-initdb.d:ro
+
+  ministack:
+    extends: { file: docker-compose.common.yml, service: ministack }
+    ports: ["4566:4566"]
+    environment:
+      MINISTACK_REGION: us-east-1
+      LOG_LEVEL: INFO
+      # MINISTACK_HOST propositalmente ausente: QueueUrl reflete o Host do cliente
+
+  migrate:
+    extends: { file: docker-compose.common.yml, service: migrate }
+    environment:
+      DATABASE_MIGRATION_URL: postgres://wagering:wagering@postgres:5432/wagering
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  app:
+    extends: { file: docker-compose.common.yml, service: app }
+    environment:
+      DATABASE_URL: postgres://wagering_app:wagering_app@postgres:5432/wagering
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      ministack: { condition: service_healthy }
+
+  # Porta de entrada HTTP. Permite `docker compose up -d --scale app=3` (as réplicas não
+  # publicam porta no host; o nginx distribui entre elas).
+  gateway:
+    image: nginx:1.29-alpine
+    ports: ["${APP_PORT:-43180}:80"]    # porta alta para não colidir com serviços locais em 3000/8080
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infra/nginx/app-proxy.conf:/etc/nginx/snippets/app-proxy.conf:ro
+      - ./docs/architecture-overview.html:/usr/share/nginx/docs/architecture-overview.html:ro
+    depends_on:
+      app: { condition: service_healthy }
+
+  # ---------------------------------------------------------------- ferramentas (opcionais)
+  # `docker compose --profile tools up -d`: visualizar API, banco e filas durante o desenvolvimento.
+  swagger-ui:                       # servido pelo gateway em /docs (mesma origem da API: "Try it out" sem CORS)
+    profiles: [tools]
+    image: swaggerapi/swagger-ui:v5.17.14
+    environment:
+      BASE_URL: /docs
+      SWAGGER_JSON: /spec/openapi.yaml
+    volumes:
+      - ./docs/openapi.yaml:/spec/openapi.yaml:ro
+
+  pgweb:                            # navegador do PostgreSQL: abre já conectado, sem tela de login
+    profiles: [tools]
+    image: sosedoff/pgweb:0.16.2
+    ports: ["${PGWEB_PORT:-43181}:8081"]
+    environment:
+      PGWEB_DATABASE_URL: postgres://wagering:wagering@postgres:5432/wagering?sslmode=disable
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  sqs-admin:                        # filas e mensagens do MiniStack
+    profiles: [tools]
+    # o Hub só publica `latest`: digest fixo da imagem testada
+    image: pacovk/sqs-admin@sha256:1e8abd48a2154a88b3b8f6e3d6ebc2e3aec5944844d98fa67abde5ebf9c1af0d
+    ports: ["${SQS_ADMIN_PORT:-43182}:3999"]
+    environment:
+      SQS_ENDPOINT_URL: http://ministack:4566
+      SQS_AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+    depends_on:
+      ministack: { condition: service_healthy }
+
+volumes:
+  pgdata:

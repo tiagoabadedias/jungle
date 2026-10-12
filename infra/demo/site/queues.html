@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wagering Processor · Filas</title>
+<style>
+:root {
+  --bg: #f6f7f4; --surface: #ffffff; --ink: #18201b; --muted: #5b665f; --line: #d9ded8;
+  --accent: #1f6b47; --accent-soft: #e3efe8; --bad: #a33a2c; --bad-soft: #f8e5e1; --code: #eef1ec;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #111613; --surface: #18201b; --ink: #e4ebe6; --muted: #9aa69f; --line: #2c3730;
+    --accent: #6fcf9d; --accent-soft: #1d3127; --bad: #f08a7a; --bad-soft: #3d1f1a; --code: #1d2620; color-scheme: dark; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 var(--sans); padding-inline: 16px; }
+main { max-width: 1100px; margin: 0 auto; padding-block: 32px 64px; display: flex; flex-direction: column; gap: 28px; }
+h1 { font-size: 1.6rem; margin: 0; }
+h2 { font-size: 1.1rem; margin: 0; font-family: var(--mono); }
+p { margin: 0; max-width: 80ch; }
+.muted { color: var(--muted); }
+.bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+button, label { font: 500 .85rem var(--sans); }
+button { border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+button:focus-visible { outline: 2px solid var(--accent); }
+section { display: flex; flex-direction: column; gap: 10px; }
+.head { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; }
+.count { font: 600 .8rem var(--mono); background: var(--accent-soft); color: var(--accent); padding: 2px 10px; border-radius: 999px; }
+.count.bad { background: var(--bad-soft); color: var(--bad); }
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: .84rem; }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { background: var(--code); color: var(--muted); font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; }
+tr:last-child td { border-bottom: none; }
+td.mono, code { font-family: var(--mono); font-size: .8rem; }
+pre { margin: 6px 0 0; padding: 10px 12px; background: var(--code); border-radius: 6px; font: .78rem/1.5 var(--mono); overflow-x: auto; max-width: 640px; }
+details summary { cursor: pointer; color: var(--accent); }
+.pill { font: 600 .72rem var(--mono); padding: 1px 8px; border-radius: 999px; background: var(--bad-soft); color: var(--bad); white-space: nowrap; }
+.empty { padding: 14px 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <header class="bar" style="justify-content: space-between;">
+    <div>
+      <h1>Filas SQS (MiniStack)</h1>
+      <p class="muted">Somente leitura: esta página usa a inspeção do emulador, que <strong>não consome</strong> mensagens nem altera a visibilidade delas. A aplicação continua processando normalmente.</p>
+    </div>
+    <div class="bar">
+      <button id="refresh" type="button">Atualizar</button>
+      <label><input id="auto" type="checkbox" checked> atualizar a cada 5 s</label>
+      <span class="muted" id="updated"></span>
+    </div>
+  </header>
+  <div id="queues"></div>
+</main>
+<script>
+  const QUEUES = [
+    { name: 'wager-transactions.fifo', role: 'Entrada: WagerTransactionRequested. O consumer processa e confirma após o commit, então normalmente fica vazia.' },
+    { name: 'wager-transactions-dlq.fifo', role: 'DLQ: mensagens inválidas, conflitantes ou que esgotaram as tentativas, com o motivo em failureReason.', bad: true },
+    { name: 'wallet-events.fifo', role: 'Eventos de integração publicados pela outbox depois do commit. Nada consome esta fila neste projeto, então os eventos ficam visíveis.' },
+  ];
+  const escape = (value) => String(value ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+
+  function pretty(body) {
+    try { return JSON.stringify(JSON.parse(body), null, 2); } catch { return body; }
+  }
+
+  function summary(body) {
+    try {
+      const event = JSON.parse(body);
+      if (event.eventType) return `${event.eventType} · ${event.data?.kind ?? ''} ${event.data?.status ?? event.data?.direction ?? ''}`;
+      if (event.type) return `${event.type} · ${event.data?.kind ?? ''} ${event.data?.money?.amount ?? ''}`;
+    } catch { /* corpo não-JSON (ex.: mensagem malformada na DLQ) */ }
+    return 'corpo não é JSON válido';
+  }
+
+  async function load(queue) {
+    const url = `http://ministack:4566/000000000000/${queue.name}`;
+    const response = await fetch(`/api/messages?QueueUrl=${encodeURIComponent(url)}`, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const json = await response.json();
+    return Object.values(json.messages ?? {}).flatMap((regions) => Object.values(regions)).flatMap((byUrl) => Object.values(byUrl)).flat();
+  }
+
+  function render(queue, messages) {
+    const rows = messages
+      .slice()
+      .reverse()
+      .map((m) => {
+        const reason = m.MessageAttributes?.failureReason?.StringValue;
+        const sent = m.SentTimestamp ?? m.Attributes?.SentTimestamp;
+        const when = sent ? new Date(String(sent).length > 10 ? Number(sent) : Number(sent) * 1000).toLocaleString('pt-BR') : '';
+        return `<tr>
+          <td>${escape(summary(m.Body))}${reason ? ` <span class="pill">${escape(reason)}</span>` : ''}
+            <details><summary>corpo</summary><pre>${escape(pretty(m.Body))}</pre></details></td>
+          <td class="mono">${escape(m.MessageGroupId ?? m.Attributes?.MessageGroupId ?? '')}</td>
+          <td class="mono">${escape(m.ReceiveCount ?? 0)}</td>
+          <td>${m.IsVisible === false ? 'em processamento' : 'visível'}</td>
+          <td class="mono">${escape(when)}</td>
+        </tr>`;
+      })
+      .join('');
+    return `<section>
+      <div class="head"><h2>${escape(queue.name)}</h2><span class="count${queue.bad && messages.length ? ' bad' : ''}">${messages.length} mensagens</span></div>
+      <p class="muted">${escape(queue.role)}</p>
+      <div class="table-wrap">${messages.length
+        ? `<table><thead><tr><th>Conteúdo</th><th>Grupo (wallet)</th><th>Recebida</th><th>Estado</th><th>Enviada</th></tr></thead><tbody>${rows}</tbody></table>`
+        : '<div class="empty">Fila vazia.</div>'}</div>
+    </section>`;
+  }
+
+  async function refresh() {
+    const sections = await Promise.all(
+      QUEUES.map(async (queue) => {
+        try { return render(queue, await load(queue)); }
+        catch (error) { return `<section><h2>${escape(queue.name)}</h2><p class="muted">Não foi possível ler a fila (${escape(error.message)}).</p></section>`; }
+      }),
+    );
+    document.getElementById('queues').innerHTML = sections.join('');
+    document.getElementById('updated').textContent = `atualizado ${new Date().toLocaleTimeString('pt-BR')}`;
+  }
+
+  document.getElementById('refresh').addEventListener('click', refresh);
+  setInterval(() => { if (document.getElementById('auto').checked) refresh(); }, 5000);
+  refresh();
+</script>
+</body>
+</html>

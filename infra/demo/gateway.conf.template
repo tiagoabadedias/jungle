@@ -1,0 +1,70 @@
+# Ambiente temporário, aberto publicamente. Nenhuma autenticação em lugar nenhum: a API é a
+# entregue (§2), health aberto, ferramentas de inspeção somente leitura.
+
+# :80 — página da demo, API, Swagger, health e métricas
+server {
+  listen 80;
+  root /usr/share/nginx/demo;
+  add_header X-Demo-Environment "temporary; expires=${DEMO_EXPIRES}" always;
+
+  location = / {
+    add_header X-Demo-Environment "temporary; expires=${DEMO_EXPIRES}" always;
+    add_header Cache-Control "no-store" always;
+    try_files /index.html =404;
+  }
+
+  location = /demo.json {
+    add_header X-Demo-Environment "temporary; expires=${DEMO_EXPIRES}" always;
+    add_header Cache-Control "no-store" always;
+    try_files /demo.json =404;
+  }
+
+  location = /openapi.yaml {
+    alias /usr/share/nginx/spec/openapi.yaml;
+  }
+
+  # /docs (Swagger UI) e / (aplicação: API, /health/*, /metrics), iguais ao gateway local.
+  include /etc/nginx/snippets/app-proxy.conf;
+}
+
+# :8081 — pgweb (somente leitura, conexão travada na role só de SELECT)
+server {
+  listen 8081;
+  add_header X-Demo-Environment "temporary; expires=${DEMO_EXPIRES}" always;
+
+  location / {
+    set $pgweb_upstream http://pgweb:8081;
+    proxy_pass $pgweb_upstream;
+    proxy_set_header Host $host;
+  }
+}
+
+# :8082 — filas (somente leitura). Única API do MiniStack exposta: a inspeção de mensagens,
+# que NÃO consome nada, só por GET e só para as 3 filas do sistema.
+server {
+  listen 8082;
+  root /usr/share/nginx/demo;
+  add_header X-Demo-Environment "temporary; expires=${DEMO_EXPIRES}" always;
+
+  location = / {
+    add_header X-Demo-Environment "temporary; expires=${DEMO_EXPIRES}" always;
+    add_header Cache-Control "no-store" always;
+    try_files /queues.html =404;
+  }
+
+  location = /api/messages {
+    limit_except GET { deny all; }
+    # $arg_QueueUrl chega como veio na URL: aceita a forma codificada e a literal, só destas 3 filas.
+    if ($arg_QueueUrl !~ "^http(%3A|:)(%2F|/)(%2F|/)ministack(%3A|:)4566(%2F|/)000000000000(%2F|/)(wager-transactions|wager-transactions-dlq|wallet-events)\.fifo$") {
+      return 403;
+    }
+    set $ministack_upstream http://ministack:4566;
+    proxy_pass $ministack_upstream/_ministack/sqs/messages$is_args$args;
+    add_header X-Demo-Environment "temporary; expires=${DEMO_EXPIRES}" always;
+    add_header Cache-Control "no-store" always;
+  }
+
+  location / {
+    return 404;
+  }
+}

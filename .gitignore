@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+.env
+*.log
+.DS_Store
+temp/
+.snapshot-*.json
+infra/demo/.env.demo
+infra/demo/site/demo.json

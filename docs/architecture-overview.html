@@ -1,0 +1,609 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Arquitetura, domínio, modelo de dados, fluxos e garantias do processador de apostas distribuído.">
+<title>Wagering Processor Blueprint</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: blueprint técnico — índice fixo à esquerda no desktop, coluna única no celular; cada seção é uma prancha. */
+:root {
+  --bg: #f6f7f4;
+  --surface: #ffffff;
+  --ink: #18201b;
+  --muted: #5b665f;
+  --line: #d9ded8;
+  --accent: #1f6b47;
+  --accent-soft: #e3efe8;
+  --warn: #9a5b0a;
+  --warn-soft: #fbf0de;
+  --danger: #a33a2c;
+  --danger-soft: #f8e5e1;
+  --code-bg: #eef1ec;
+  --font-display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", sans-serif;
+  --font-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --step--1: 0.8125rem;
+  --step-0: 0.96875rem;
+  --step-1: 1.15rem;
+  --step-2: 1.45rem;
+  --step-3: 2.1rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111613; --surface: #18201b; --ink: #e4ebe6; --muted: #9aa69f; --line: #2c3730;
+    --accent: #6fcf9d; --accent-soft: #1d3127; --warn: #e7b464; --warn-soft: #3a2c15;
+    --danger: #f08a7a; --danger-soft: #3d1f1a; --code-bg: #1d2620; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111613; --surface: #18201b; --ink: #e4ebe6; --muted: #9aa69f; --line: #2c3730;
+  --accent: #6fcf9d; --accent-soft: #1d3127; --warn: #e7b464; --warn-soft: #3a2c15;
+  --danger: #f08a7a; --danger-soft: #3d1f1a; --code-bg: #1d2620; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink);
+  font-family: var(--font-body); font-size: var(--step-0); line-height: 1.6;
+  padding-inline: 16px; padding-block: 0;
+}
+.shell { max-width: 1180px; margin: 0 auto; display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 48px; }
+nav.toc {
+  position: sticky; top: env(safe-area-inset-top, 0px); align-self: start;
+  padding-block: 40px; display: flex; flex-direction: column; gap: 4px;
+}
+nav.toc .label { font-size: var(--step--1); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 8px; }
+nav.toc a { color: var(--muted); text-decoration: none; font-size: var(--step--1); padding: 4px 10px; border-left: 2px solid var(--line); }
+nav.toc a:hover, nav.toc a:focus-visible { color: var(--accent); border-left-color: var(--accent); outline: none; }
+main { min-width: 0; padding-block: 40px 80px; display: flex; flex-direction: column; gap: 56px; }
+
+header.hero { display: flex; flex-direction: column; gap: 14px; border-bottom: 1px solid var(--line); padding-bottom: 32px; }
+.eyebrow { font-family: var(--font-mono); font-size: var(--step--1); color: var(--accent); letter-spacing: 0.04em; }
+h1 { font-family: var(--font-display); font-size: var(--step-3); line-height: 1.1; margin: 0; text-wrap: balance; }
+h2 { font-family: var(--font-display); font-size: var(--step-2); line-height: 1.2; margin: 0; text-wrap: balance; }
+h3 { font-size: var(--step-1); margin: 0; }
+p { margin: 0; max-width: 68ch; }
+.lede { color: var(--muted); font-size: var(--step-1); max-width: 64ch; }
+.meta { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { font-family: var(--font-mono); font-size: var(--step--1); background: var(--accent-soft); color: var(--accent); padding: 2px 10px; border-radius: 999px; }
+
+section { display: flex; flex-direction: column; gap: 18px; scroll-margin-top: 24px; }
+.ref { font-family: var(--font-mono); font-size: var(--step--1); color: var(--muted); }
+.figure { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 20px; overflow-x: auto; }
+.figure pre.mermaid { margin: 0; background: transparent; display: flex; justify-content: center; min-width: 560px; }
+.caption { font-size: var(--step--1); color: var(--muted); }
+
+.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.note { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 12px 16px; border-radius: 0 8px 8px 0; display: flex; flex-direction: column; gap: 6px; }
+.note.warn { border-left-color: var(--warn); background: var(--warn-soft); }
+.note strong { font-weight: 600; }
+
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: var(--step--1); }
+th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.72rem; background: var(--code-bg); }
+tr:last-child td { border-bottom: none; }
+td.num { font-variant-numeric: tabular-nums; font-family: var(--font-mono); }
+code, .mono { font-family: var(--font-mono); font-size: 0.86em; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+pre.tree { font-family: var(--font-mono); font-size: var(--step--1); line-height: 1.55; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; margin: 0; overflow-x: auto; color: var(--ink); }
+pre.tree .c { color: var(--muted); }
+pre.tree .k { color: var(--accent); font-weight: 500; }
+
+.pill { display: inline-block; font-family: var(--font-mono); font-size: 0.72rem; padding: 1px 8px; border-radius: 999px; white-space: nowrap; }
+.pill.ok { background: var(--accent-soft); color: var(--accent); }
+.pill.wait { background: var(--warn-soft); color: var(--warn); }
+.pill.bad { background: var(--danger-soft); color: var(--danger); }
+
+ol.steps { margin: 0; padding-left: 1.3em; display: flex; flex-direction: column; gap: 6px; max-width: 72ch; }
+ol.steps li::marker { color: var(--accent); font-family: var(--font-mono); font-weight: 500; }
+
+footer { border-top: 1px solid var(--line); padding-top: 20px; color: var(--muted); font-size: var(--step--1); }
+
+@media (max-width: 860px) {
+  .shell { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  nav.toc { position: static; flex-direction: row; flex-wrap: wrap; padding-block: 24px 0; }
+  nav.toc .label { width: 100%; }
+  nav.toc a { border-left: none; border: 1px solid var(--line); border-radius: 999px; }
+  .grid-2 { grid-template-columns: minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+html { scroll-behavior: smooth; }
+</style>
+</head>
+<body>
+
+<div class="shell">
+  <nav class="toc" aria-label="Índice">
+    <span class="label">Prancha</span>
+    <a href="#camadas">Camadas</a>
+    <a href="#pastas">Estrutura de pastas</a>
+    <a href="#dominio">Modelo de domínio</a>
+    <a href="#money">Money em bigint</a>
+    <a href="#estados">Estados da transação</a>
+    <a href="#regras">Regras por operação</a>
+    <a href="#dados">Modelo de dados</a>
+    <a href="#fluxo">Fluxo transacional</a>
+    <a href="#concorrencia">Concorrência</a>
+    <a href="#mensageria">Inbox, outbox e SQS</a>
+    <a href="#falhas">Cenários de falha</a>
+    <a href="#http">Contrato HTTP</a>
+  </nav>
+
+  <main>
+    <header class="hero">
+      <span class="eyebrow">jungle · distributed wagering processor</span>
+      <h1>Como o processador de apostas está estruturado</h1>
+      <p class="lede">Arquitetura, domínio e modelagem do serviço implementado para o desafio. Cada decisão aponta para a seção do enunciado que a exige (§N).</p>
+      <div class="meta">
+        <span class="chip">Bun 1.4.2</span><span class="chip">NestJS 12</span><span class="chip">MikroORM 7</span>
+        <span class="chip">PostgreSQL 18</span><span class="chip">SQS · MiniStack</span><span class="chip">dinheiro em bigint</span>
+      </div>
+    </header>
+
+    <section id="camadas">
+      <h2>Camadas hexagonais</h2>
+      <p>As dependências apontam sempre para dentro. O domínio é TypeScript puro: não conhece NestJS, MikroORM nem SQS, e por isso é testado sem banco. HTTP e fila entram pelo <strong>mesmo use case</strong>.</p>
+      <div class="figure">
+<pre class="mermaid">
+flowchart TB
+  subgraph IN["Adapters de entrada"]
+    HTTP["HTTP controllers + DTOs<br/>(atrás do gateway nginx, N réplicas)"]
+    SQSC["SQS consumer<br/>wager-transactions.fifo"]
+    WK["Workers<br/>outbox · pending-reference"]
+  end
+  subgraph APP["Application"]
+    UC["Use cases<br/>ProcessWagerTransaction · CreateWallet<br/>Reconcile · Queries"]
+    PORTS["Portas (interfaces)<br/>Repositories · Publisher · Clock · IdGenerator"]
+  end
+  subgraph DOM["Domain — TS puro"]
+    D["Money · Wallet · WagerTransaction<br/>WalletLedgerEntry · Inbox/Outbox<br/>IntegrationEvent · FailureCode"]
+  end
+  subgraph OUT["Adapters de saída"]
+    ORM["MikroORM<br/>EntitySchema + mappers"]
+    PUB["AWS SDK v3<br/>SQS publisher"]
+  end
+  HTTP --> UC
+  SQSC --> UC
+  WK --> UC
+  UC --> D
+  UC --> PORTS
+  ORM -. implementa .-> PORTS
+  PUB -. implementa .-> PORTS
+  ORM --> PG[("PostgreSQL")]
+  PUB --> Q[["wallet-events.fifo"]]
+</pre>
+      </div>
+      <p class="caption">O domínio fica no centro; ORM e SQS são detalhes plugáveis por trás das portas.</p>
+    </section>
+
+    <section id="pastas">
+      <h2>Estrutura de pastas</h2>
+      <p>Três contextos: <code>wallet</code> é dono do saldo e do ledger, <code>wagering</code> das regras de aposta, idempotência e referências, e <code>messaging</code> move eventos sem conhecer regra de negócio. Cada contexto repete a divisão <code>domain / application / infrastructure</code>: as portas (interfaces de que um caso de uso precisa) ficam em <code>application/ports/</code> e os adaptadores em <code>infrastructure/</code>.</p>
+<pre class="tree"><span class="k">src/</span>
+├── <span class="k">shared/</span>
+│   ├── domain/          money.ts · currency.ts · failure-code.ts · integration-event.ts · exponential-backoff.ts · domain-error.ts
+│   ├── application/     application-error.ts · error-message.ts · money-input.ts · event-context-factory.ts
+│   │   └── ports/       clock.ts · id-generator.ts · unit-of-work.ts
+│   └── infrastructure/  config · database (MikroORM, UnitOfWork) · http · observability (pino, métricas) · sqs · workers (polling, lifecycle)
+├── <span class="k">wallet/</span>
+│   ├── domain/          wallet.ts <span class="c">(Aggregate Root)</span> · wallet-ledger-entry.ts · ledger-direction.ts · events/
+│   ├── application/     create-wallet · wallet-queries · reconcile-wallet
+│   │   └── ports/       wallet.repository · ledger.repository · reconciliation-monitor
+│   └── infrastructure/  persistence/ · http/ · observability/
+├── <span class="k">wagering/</span>
+│   ├── domain/          wager-transaction.ts · wager-settlement.ts <span class="c">(regras do §7)</span> · payload-hash.ts · events/
+│   ├── application/     process-wager-transaction <span class="c">★ HTTP + SQS</span> · reprocess-pending-references · settlement-effects · views
+│   │   └── ports/       wager-transaction.repository
+│   └── infrastructure/  persistence/ · http/ · sqs/ <span class="c">(consumer, settler, classificação de erros)</span> · workers/ · observability/
+├── <span class="k">messaging/</span>
+│   ├── domain/          inbox-message.ts · outbox-message.ts
+│   ├── application/     publish-outbox
+│   │   └── ports/       inbox.repository · outbox.repository · event-publisher
+│   └── infrastructure/  persistence/ <span class="c">(+ outbox lag)</span> · sqs/ <span class="c">(publisher)</span> · workers/
+├── <span class="k">auth/</span>             application/ports/provider-identity.port · infrastructure/ <span class="c">(no-op + guard, §2)</span>
+├── health/  app.module.ts  configure-app.ts  main.ts
+<span class="k">migrations/</span>  <span class="c">SQL escrito à mão, up + down</span>
+<span class="k">test/</span>  unit/ · integration/ · concurrency/ · helpers/</pre>
+    </section>
+
+    <section id="dominio">
+      <h2>Modelo de domínio</h2>
+      <p>Toda entidade tem construtor privado: nasce por <code>create</code>/<code>open</code>/<code>from</code>, que validam regras, ou por <code>rehydrate</code>, que só reconstrói o estado persistido (§6.0). A <code>Wallet</code> é a única que altera saldo, e <code>move</code> (com os atalhos <code>debit</code>/<code>credit</code>) devolve o lançamento: não existe caminho para mudar saldo sem ledger.</p>
+      <div class="figure">
+<pre class="mermaid">
+classDiagram
+  direction LR
+  class Money {
+    &lt;&lt;Value Object&gt;&gt;
+    -bigint minorUnits
+    +string currency
+    +from(props) Money
+    +zero(currency) Money
+    +add(other) Money
+    +subtract(other) Money
+    +negate() Money
+    +isLessThan(other) bool
+    +toJSON() MoneyProps
+  }
+  class Wallet {
+    &lt;&lt;Aggregate Root&gt;&gt;
+    +string id
+    +string playerId
+    +string currency
+    -Money balance
+    -number version
+    +open(props) Wallet
+    +rehydrate(state) Wallet
+    +move(direction, movement) WalletLedgerEntry
+    +debit(movement) WalletLedgerEntry
+    +credit(movement) WalletLedgerEntry
+  }
+  class WagerTransaction {
+    &lt;&lt;Entity&gt;&gt;
+    +string providerId
+    +string externalTransactionId
+    +string idempotencyKey
+    +string payloadHash
+    +Kind kind
+    +Money money
+    -Status status
+    -FailureCode failureCode
+    -Money balanceAfterSnapshot
+    +create(props) WagerTransaction
+    +markProcessed(refId, at)
+    +markPendingReference()
+    +reject(code)
+    +fail(code)
+    +ledgerDirectionFor(ref) LedgerDirection
+  }
+  class WalletLedgerEntry {
+    &lt;&lt;Entity imutável&gt;&gt;
+    +string walletId
+    +string transactionId
+    +LedgerDirection direction
+    +Money money
+    +Money balanceBefore
+    +Money balanceAfter
+    +create(props) WalletLedgerEntry
+    +isBalanced() bool
+  }
+  class OutboxMessage {
+    +number attempts
+    +Date nextAttemptAt
+    +Date publishedAt
+    +enqueue(event) OutboxMessage
+    +markPublished(at)
+    +scheduleRetry(now)
+  }
+  class InboxMessage {
+    +string consumerName
+    +string messageId
+    +markProcessed(at)
+  }
+  class IntegrationEvent {
+    &lt;&lt;abstract&gt;&gt;
+    +string eventType
+    +number version
+    +string correlationId
+    +toJSON()
+  }
+  Wallet *-- Money
+  WagerTransaction *-- Money
+  Wallet ..> WalletLedgerEntry : cria
+  WagerTransaction "1" --> "0..1" WalletLedgerEntry
+  WagerTransaction --> WagerTransaction : referência
+  OutboxMessage ..> IntegrationEvent : serializa
+  IntegrationEvent <|-- WagerTransactionProcessed
+  IntegrationEvent <|-- WagerTransactionRejected
+  IntegrationEvent <|-- WalletBalanceChanged
+  IntegrationEvent <|-- WagerTransactionPendingReference
+</pre>
+      </div>
+    </section>
+
+    <section id="money">
+      <h2>Money em bigint</h2>
+      <p>Dinheiro nunca passa por <code>number</code> (§5.1, eliminatório). Internamente e no banco o valor é <code>bigint</code> em centavos; a string decimal com 2 casas existe só nas bordas (HTTP, SQS, eventos).</p>
+      <div class="figure">
+<pre class="mermaid">
+flowchart LR
+  A["#quot;25.00#quot; BRL<br/>HTTP · SQS"] -->|"Money.from<br/>regex + inteiro x 100 + centavos"| B["2500n<br/>domínio"]
+  B -->|"MikroORM bigint<br/>runtimeType bigint"| C[("amount_minor<br/>bigint")]
+  C -->|"rehydrate"| B
+  B -->|"Money.toJSON"| D["#quot;25.00#quot;<br/>resposta · evento"]
+</pre>
+      </div>
+      <div class="grid-2">
+        <div class="note">
+          <strong>Por que bigint e não numeric(19,2)</strong>
+          <p>Testado no ambiente: <code>numeric(19,2)</code> grava <code>25.005</code> como <code>25.01</code> sem erro e aceita <code>NaN</code>. Inteiro não tem casa decimal para perder. O desafio só pede somar, subtrair, inverter e comparar.</p>
+        </div>
+        <div class="note warn">
+          <strong>Proibido em código monetário</strong>
+          <p><code>parseFloat</code>, <code>Number(</code>, <code>parseInt</code>, <code>Math.*</code> e <code>+</code> unário. Um teste varre o código e falha se encontrar qualquer um.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="estados">
+      <h2>Estados da transação</h2>
+      <p><span class="pill ok">PROCESSED</span> <span class="pill bad">REJECTED</span> <span class="pill bad">FAILED</span> são terminais: tentar transicioná-los é erro de programação (§6.3), e um trigger no banco também bloqueia.</p>
+      <div class="figure">
+<pre class="mermaid">
+stateDiagram-v2
+  [*] --> PENDING : create()
+  PENDING --> PROCESSED : regra aplicada
+  PENDING --> REJECTED : regra de negócio
+  PENDING --> PENDING_REFERENCE : referência ausente
+  PENDING_REFERENCE --> PENDING_REFERENCE : worker reagenda (backoff)
+  PENDING_REFERENCE --> PROCESSED : referência chegou
+  PENDING_REFERENCE --> REJECTED : regra violada ou tentativas esgotadas
+  PENDING_REFERENCE --> FAILED : erro permanente no worker
+  PROCESSED --> [*]
+  REJECTED --> [*]
+  FAILED --> [*]
+</pre>
+      </div>
+      <p class="caption">PENDING nunca é persistido sozinho: dentro da transação SQL ele já sai para um estado final ou para PENDING_REFERENCE. O worker tenta 10 vezes com backoff exponencial (2 s até o teto de 5 min, ~18,5 min no total); esgotar as tentativas gera <code>REFERENCE_NOT_FOUND</code> (§7.1). <code>FAILED</code> (<code>INFRA_PERMANENT_FAILURE</code>) acontece quando o worker de referências encontra um erro que não é de negócio nem transitório (queda de conexão, lock e indisponibilidade do banco são transitórios e só adiam o item): a transação fica auditável e o worker segue para os demais itens. Na entrada HTTP/SQS, um erro assim desfaz a transação SQL inteira.</p>
+    </section>
+
+    <section id="regras">
+      <h2>Regras por operação</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Kind</th><th>Saldo</th><th>Ledger</th><th>Referência</th><th>Rejeição principal</th></tr></thead>
+          <tbody>
+            <tr><td><code>OPENING</code></td><td>crédito</td><td>CREDIT</td><td>—</td><td>interno, nunca via API ou fila</td></tr>
+            <tr><td><code>BET</code></td><td>débito</td><td>DEBIT</td><td>—</td><td><code>INSUFFICIENT_FUNDS</code></td></tr>
+            <tr><td><code>WIN</code></td><td>crédito</td><td>CREDIT</td><td>opcional → BET da rodada</td><td><code>REFERENCE_MISMATCH</code></td></tr>
+            <tr><td><code>LOSS</code></td><td>nenhum</td><td>nenhum</td><td>—</td><td>aceita <span class="mono">0.00</span></td></tr>
+            <tr><td><code>REFUND</code></td><td>crédito</td><td>CREDIT</td><td>obrigatória → BET</td><td><code>REFERENCE_ALREADY_REVERSED</code></td></tr>
+            <tr><td><code>ROLLBACK</code></td><td>inverso da ref.</td><td>invertido</td><td>obrigatória → BET, WIN, REFUND</td><td><code>REVERSAL_INSUFFICIENT_FUNDS</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Uma referência é revertida <strong>uma única vez, por qualquer kind</strong>: REFUND e ROLLBACK da mesma BET creditariam o valor duas vezes (§3). Ela precisa ter o mesmo provider, player, wallet, moeda e rodada, e o valor da reversão deve ser igual (§7.2, §7.5).</p>
+    </section>
+
+    <section id="dados">
+      <h2>Modelo de dados</h2>
+      <p>As garantias de unicidade, imutabilidade e não-negatividade moram no schema (§5.9), não só no código.</p>
+      <div class="figure">
+<pre class="mermaid">
+erDiagram
+  WALLETS ||--o{ WAGER_TRANSACTIONS : "recebe"
+  WALLETS ||--o{ WALLET_LEDGER_ENTRIES : "registra"
+  WAGER_TRANSACTIONS ||--o| WALLET_LEDGER_ENTRIES : "gera no máximo 1"
+  WAGER_TRANSACTIONS |o--o{ WAGER_TRANSACTIONS : "referencia"
+  WALLETS {
+    uuid id PK
+    uuid player_id "UNIQUE com currency"
+    char3 currency
+    bigint balance_minor "CHECK >= 0"
+    int version "CHECK >= 1"
+  }
+  WAGER_TRANSACTIONS {
+    uuid id PK
+    uuid wallet_id FK
+    text provider_id "UNIQUE com external_tx_id"
+    text external_tx_id
+    text idempotency_key "UNIQUE"
+    char64 payload_hash
+    text kind
+    text status
+    bigint amount_minor
+    uuid reference_tx_id FK "UNIQUE parcial em reversões"
+    text failure_code
+    bigint balance_after_snapshot_minor
+  }
+  WALLET_LEDGER_ENTRIES {
+    uuid id PK
+    uuid wallet_id FK
+    uuid transaction_id FK "UNIQUE com wallet_id"
+    text direction
+    bigint amount_minor "CHECK > 0"
+    bigint balance_before_minor
+    bigint balance_after_minor "CHECK = before ± amount"
+  }
+  INBOX_MESSAGES {
+    text consumer_name PK
+    text message_id PK
+    char64 payload_hash
+    timestamptz processed_at
+  }
+  OUTBOX_MESSAGES {
+    uuid id PK
+    uuid aggregate_id
+    text event_type
+    jsonb payload
+    int attempts
+    timestamptz next_attempt_at
+    timestamptz published_at
+  }
+</pre>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Garantia</th><th>Onde no banco</th><th>Requisito</th></tr></thead>
+          <tbody>
+            <tr><td>Uma wallet por player + moeda</td><td><code>UNIQUE(player_id, currency)</code></td><td class="num">§6.2</td></tr>
+            <tr><td>Saldo nunca negativo</td><td><code>CHECK(balance_minor &gt;= 0)</code></td><td class="num">§3, §6.2</td></tr>
+            <tr><td>Idempotência persistente</td><td><code>UNIQUE(idempotency_key)</code>, <code>UNIQUE(provider_id, external_tx_id)</code></td><td class="num">§5.2, §9</td></tr>
+            <tr><td>No máximo 1 lançamento por transação</td><td><code>UNIQUE(transaction_id, wallet_id)</code></td><td class="num">§6.4</td></tr>
+            <tr><td>Reversão única</td><td>unique parcial em <code>reference_tx_id</code> para REFUND/ROLLBACK processados</td><td class="num">§7.4</td></tr>
+            <tr><td>Aritmética do lançamento</td><td><code>CHECK(after = before ± amount)</code> por direção</td><td class="num">§6.4</td></tr>
+            <tr><td>Ledger append-only</td><td>trigger contra UPDATE, DELETE e TRUNCATE; app sem ser dona das tabelas</td><td class="num">§5.5</td></tr>
+            <tr><td>Estados terminais imutáveis</td><td>trigger contra UPDATE de linha terminal</td><td class="num">§6.3</td></tr>
+            <tr><td>Dedup de mensagens</td><td><code>PK(consumer_name, message_id)</code></td><td class="num">§10</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="fluxo">
+      <h2>Fluxo transacional</h2>
+      <p>Inbox, transação, saldo, ledger e outbox participam da <strong>mesma transação SQL</strong> (§6.5). Gravar o evento na outbox acontece antes do commit; <strong>publicar</strong> acontece só depois, num worker separado (§5.4). O ack da fila também só depois do commit (§10).</p>
+      <div class="figure">
+<pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant P as Provedor (HTTP ou SQS)
+  participant UC as ProcessWagerTransaction
+  participant DB as PostgreSQL
+  participant W as Outbox worker
+  participant Q as wallet-events.fifo
+  P->>UC: comando + Idempotency-Key
+  UC->>DB: BEGIN
+  UC->>DB: INSERT inbox ON CONFLICT DO NOTHING (só SQS)
+  UC->>DB: SELECT wallet FOR UPDATE
+  UC->>DB: busca por idempotency_key
+  alt chave já existe
+    UC-->>P: mesmo hash: replay da resposta original<br/>hash diferente: 409 conflito
+  else chave nova
+    UC->>UC: domínio aplica a regra (debit/credit/reject)
+    UC->>DB: INSERT transação · UPDATE wallet · INSERT ledger
+    UC->>DB: INSERT outbox (eventos)
+    UC->>DB: COMMIT
+    UC-->>P: 201 / 202 / 422 · ack SQS após o commit
+  end
+  W->>DB: SELECT outbox pendente FOR UPDATE SKIP LOCKED
+  W->>Q: SendMessage (dedup = eventId)
+  W->>DB: published_at = now()
+</pre>
+      </div>
+    </section>
+
+    <section id="concorrencia">
+      <h2>Concorrência por wallet</h2>
+      <p>A unidade de lock é a <code>walletId</code> (§8): wallets diferentes rodam em paralelo, a mesma wallet serializa. O cenário obrigatório: saldo <span class="mono">100.00</span>, duas apostas de <span class="mono">80.00</span> ao mesmo tempo, em instâncias diferentes.</p>
+      <div class="figure">
+<pre class="mermaid">
+sequenceDiagram
+  participant A as Instância A · BET 80.00
+  participant DB as wallets (saldo 100.00)
+  participant B as Instância B · BET 80.00
+  A->>DB: SELECT ... FOR UPDATE
+  Note over DB: lock da wallet com A
+  B->>DB: SELECT ... FOR UPDATE
+  Note over B: espera (lock_timeout)
+  A->>DB: saldo 20.00 · 1 DEBIT · COMMIT
+  DB-->>B: lock liberado, lê saldo 20.00
+  B->>DB: domínio rejeita: INSUFFICIENT_FUNDS
+  B->>DB: transação REJECTED, sem ledger · COMMIT
+</pre>
+      </div>
+      <p class="caption">Resultado: 1 PROCESSED, 1 REJECTED, saldo 20.00 e exatamente um débito no ledger. As 50 apostas idênticas em paralelo seguem o mesmo caminho: a primeira processa e as outras 49 encontram a chave comitada e devolvem replay.</p>
+    </section>
+
+    <section id="mensageria">
+      <h2>Inbox, outbox e SQS</h2>
+      <div class="figure">
+<pre class="mermaid">
+flowchart LR
+  subgraph FILA["Entrada"]
+    WT[["wager-transactions.fifo<br/>MessageGroupId = walletId"]]
+    DLQ[["wager-transactions-dlq.fifo"]]
+  end
+  C["Consumer<br/>long polling"] -->|receive| WT
+  C --> UC["mesmo use case do HTTP"]
+  UC -->|negócio: processada, rejeitada, pendente, replay| ACK["DeleteMessage<br/>após commit"]
+  UC -->|transitório: DB/SQS fora| VIS["ChangeMessageVisibility<br/>backoff"]
+  UC -->|permanente: malformada, conflito| DLQ
+  VIS -.->|maxReceiveCount = 5| DLQ
+  UC --> OB[("outbox")]
+  OB --> W["Outbox worker<br/>N instâncias, SKIP LOCKED"]
+  W --> EV[["wallet-events.fifo"]]
+</pre>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Evento</th><th>Quando</th></tr></thead>
+          <tbody>
+            <tr><td><code>WagerTransactionProcessed</code></td><td>qualquer transação aplicada, inclusive LOSS</td></tr>
+            <tr><td><code>WagerTransactionRejected</code></td><td>rejeição por regra de negócio, inclusive referência expirada</td></tr>
+            <tr><td><code>WalletBalanceChanged</code></td><td>somente quando o saldo muda</td></tr>
+            <tr><td><code>WagerTransactionPendingReference</code></td><td>referência ausente</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="grid-2">
+        <div class="note">
+          <strong>Ordem do grupo FIFO no consumer</strong>
+          <p>O lote é processado em sequência. Se uma mensagem é reagendada, as seguintes do mesmo <code>MessageGroupId</code> ficam retidas pelo mesmo tempo e voltam depois dela. A consistência continua vindo do banco (inbox + idempotência), não da fila (§5.3).</p>
+        </div>
+        <div class="note warn">
+          <strong>Ordem dos eventos publicados</strong>
+          <p>Com vários publishers (<code>SKIP LOCKED</code>), dois eventos da mesma wallet podem sair fora da ordem de ocorrência. <code>WalletBalanceChanged</code> carrega <code>walletVersion</code> para o consumidor ordenar.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="falhas">
+      <h2>Cenários de falha</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Momento da falha</th><th>O que acontece</th><th>Resultado</th></tr></thead>
+          <tbody>
+            <tr><td>Processo morre antes do commit</td><td>rollback; a mensagem volta a ficar visível</td><td><span class="pill ok">reprocessa sem efeito parcial</span></td></tr>
+            <tr><td>Morre depois do commit, antes do ack</td><td>redelivery encontra a inbox já gravada</td><td><span class="pill ok">ack sem duplicar</span></td></tr>
+            <tr><td>Morre depois do commit, antes de publicar</td><td>evento continua pendente na outbox</td><td><span class="pill ok">outra instância publica</span></td></tr>
+            <tr><td>Morre depois de publicar, antes de marcar</td><td>evento é publicado de novo</td><td><span class="pill wait">duplicata segura via eventId</span></td></tr>
+            <tr><td>PostgreSQL indisponível</td><td>HTTP 503; mensagem não recebe ack; worker de referências adia o item</td><td><span class="pill wait">retry com backoff</span></td></tr>
+            <tr><td>SQS indisponível</td><td>outbox acumula; readiness falha</td><td><span class="pill wait">publica quando voltar</span></td></tr>
+            <tr><td>SIGTERM</td><td>para de buscar, conclui o que está em andamento, devolve a visibilidade do resto (medido: ~0,2 s no container)</td><td><span class="pill ok">sem perda</span></td></tr>
+            <tr><td>Erro permanente ao reprocessar uma referência</td><td>transação vira <code>FAILED</code> (<code>INFRA_PERMANENT_FAILURE</code>)</td><td><span class="pill bad">auditável, worker segue</span></td></tr>
+            <tr><td>Todas as instâncias caem no meio da carga</td><td>novas instâncias retomam fila, outbox e pendências; o provedor reenvia o que ficou sem resposta</td><td><span class="pill ok">saldo = ledger em todas as wallets</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="http">
+      <h2>Contrato HTTP</h2>
+      <p>O status distingue cada situação de forma consistente em todos os endpoints (§9). Um replay devolve exatamente a resposta original, com <code>idempotentReplay: true</code>.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Situação</th><th>Status</th><th>Provedor pode reenviar?</th></tr></thead>
+          <tbody>
+            <tr><td>Processada, wallet criada</td><td class="num">201</td><td>não precisa</td></tr>
+            <tr><td>Aceita, aguardando referência</td><td class="num">202</td><td>não precisa</td></tr>
+            <tr><td>Payload inválido, header ausente, OPENING</td><td class="num">400</td><td>só corrigido</td></tr>
+            <tr><td>Recurso inexistente</td><td class="num">404</td><td>depois de criar o recurso</td></tr>
+            <tr><td>Conflito de idempotência, wallet duplicada</td><td class="num">409</td><td>não</td></tr>
+            <tr><td>Rejeição por regra de negócio</td><td class="num">422</td><td>não (veja o <code>failureCode</code>)</td></tr>
+            <tr><td>Falha transitória de infraestrutura (com <code>Retry-After</code>)</td><td class="num">503</td><td>sim, com backoff</td></tr>
+            <tr><td>Erro interno, transação <code>FAILED</code></td><td class="num">500</td><td>não</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer>
+      Implementação concluída: 354 testes (PostgreSQL e MiniStack reais, até 3 processos simultâneos), 99,5% das linhas cobertas. Detalhes e decisões em <code>ARCHITECTURE.md</code>; setup em <code>README.md</code>; execução em <code>docs/PROGRESS.md</code>; enunciado em <code>docs/CHALLENGE.md</code>.
+    </footer>
+  </main>
+</div>
+
+<script>
+  // Diagramas: renderizados no navegador a partir dos blocos <pre class="mermaid">.
+  window.addEventListener('load', function () {
+    var nodes = document.querySelectorAll('pre.mermaid');
+    if (nodes.length === 0) return;
+    var script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js';
+    script.onload = function () {
+      var dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      // deterministicIds: sem isso os ids saem de Date.now() e diagramas renderizados no mesmo
+      // milissegundo colidem (todos desenhados no primeiro SVG).
+      window.mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', deterministicIds: true, theme: dark ? 'dark' : 'neutral' });
+      window.mermaid.run({ nodes: nodes });
+    };
+    document.head.appendChild(script);
+  });
+</script>
+</body>
+</html>

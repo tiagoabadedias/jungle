@@ -1,0 +1,45 @@
+# Definições comuns ao ambiente local (docker-compose.yml) e à demonstração (docker-compose.demo.yml),
+# reaproveitadas com `extends`. Só o que é idêntico nos dois fica aqui; portas, volumes de dados,
+# credenciais e dependências ficam em cada arquivo. Não é usado sozinho.
+services:
+  postgres:
+    image: postgres:18.6
+    healthcheck:
+      # -h 127.0.0.1: evita "healthy" antes do fim dos scripts de init
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U wagering -d wagering"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  ministack:
+    image: ministackorg/ministack:1.5.24
+    volumes:
+      - ./infra/ministack/ready.d:/etc/localstack/init/ready.d:ro
+    healthcheck:
+      # 200 somente após os scripts de ready.d terminarem (imagem sem curl/wget)
+      # /_ministack/ready fica "completed" mesmo se o script falhar → confere também a última fila criada (wallet-events)
+      test: ["CMD-SHELL", "python -c \"import urllib.request as r; r.urlopen('http://localhost:4566/_ministack/ready')\" && AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test aws --endpoint-url http://localhost:4566 --region us-east-1 sqs get-queue-url --queue-name wallet-events.fifo"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  migrate:
+    build: .
+    entrypoint: ["bun", "src/shared/infrastructure/database/migrate.ts", "up"]
+    restart: "no"
+
+  app:
+    build: .
+    environment:
+      PORT: 3000
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test       # credenciais falsas, só para o emulador
+      AWS_SECRET_ACCESS_KEY: test
+      SQS_ENDPOINT: http://ministack:4566
+    stop_grace_period: 30s        # maior que o prazo de drenagem do shutdown
+    healthcheck:
+      test: ["CMD", "bun", "-e", "const r = await fetch('http://127.0.0.1:3000/health/live'); process.exit(r.ok ? 0 : 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10

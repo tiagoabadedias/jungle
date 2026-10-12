@@ -1,0 +1,50 @@
+{
+  "name": "wagering-processor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.4.2",
+  "scripts": {
+    "start": "bun src/main.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "orm": "bun --env-file=.env --bun mikro-orm",
+    "infra:up": "docker compose up -d --wait",
+    "infra:down": "docker compose down",
+    "test:unit": "bun test ./test/unit --parallel",
+    "test:unit:coverage": "bun test ./test/unit --parallel --coverage",
+    "test:coverage": "bun test --coverage --timeout 120000 ./test",
+    "db:migrate": "bun src/shared/infrastructure/database/migrate.ts up",
+    "db:migrate:down": "bun src/shared/infrastructure/database/migrate.ts down",
+    "test:integration": "bun test ./test/integration --timeout 60000",
+    "test:concurrency": "bun test ./test/concurrency --timeout 120000",
+    "test": "bun run test:unit && bun run test:integration && bun run test:concurrency",
+    "demo": "bun scripts/demo.ts",
+    "test:load": "bun scripts/load-test.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-sqs": "^3.1149.0",
+    "@mikro-orm/core": "^7",
+    "@mikro-orm/migrations": "^7",
+    "@mikro-orm/postgresql": "^7",
+    "@nestjs/common": "^12",
+    "@nestjs/core": "^12",
+    "@nestjs/platform-express": "^12",
+    "@prometheus-io/client": "^0.16.1",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.15.1",
+    "pino": "^10.4.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "@mikro-orm/cli": "^7",
+    "@nestjs/testing": "^12",
+    "@types/bun": "^1.4.2",
+    "typescript": "^7.0.2"
+  },
+  "mikro-orm": {
+    "configPaths": [
+      "./src/shared/infrastructure/database/mikro-orm.cli.config.ts"
+    ]
+  }
+}
